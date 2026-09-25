@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+resultado*.json
+codex_resume*
+WhatsApp Image*
+.agents/
+.codex/

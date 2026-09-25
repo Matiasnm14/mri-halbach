@@ -1,0 +1,154 @@
+PROYECTO HALBACH PARA MRI: CÓMO FUNCIONA EL PROTOTIPO
+======================================================
+
+1. Qué problema resuelve ahora
+-----------------------------
+halbach.py es una primera simulación diferenciable de un arreglo cilíndrico
+de imanes permanentes tipo Halbach. Calcula el campo magnético en una región
+interior y ajusta la orientación de cada imán para reducir la variación de
+la componente principal Bx. Es un experimento de corrección angular, no un
+diseño completo del resonador ni una reconstrucción de imágenes de MRI.
+
+La pregunta que responde es: si los imanes tienen pequeños errores de
+orientación simulados, ¿pueden unas correcciones angulares mejorar la
+uniformidad del campo dentro de la región de interés (ROI)?
+
+2. Archivos del proyecto
+------------------------
+- halbach.py: geometría, cálculo de campo, métricas y optimización.
+- requirements.txt: versiones de PyTorch y NumPy necesarias.
+- README.md: instalación, comandos y límites generales.
+- resultado_gpu.json: parámetros y resultados de una corrida en GPU.
+- .venv/: entorno virtual local; no se debe copiar como código fuente.
+
+3. Recorrido del código
+-----------------------
+a) Geometry guarda el número de imanes, radio del anillo, dimensiones de
+   cada bloque, remanencia Br, tamaño de la ROI y resolución numérica.
+   validate() comprueba dimensiones positivas, que la ROI esté dentro del
+   arreglo y una condición aproximada para evitar superposición de imanes.
+
+b) sample_points() crea una malla 3D y conserva solo los puntos dentro de
+   un cilindro centrado en el origen. Allí se evalúa el campo. Con los
+   valores por defecto se parte de una malla de 9 x 9 x 5 y se recortan
+   los puntos fuera del radio de la ROI.
+
+c) magnet_sources() coloca los imanes alrededor del anillo. Para cada
+   imán construye una malla de fuentes internas: con quadrature=3 son
+   3 x 3 x 3 = 27 dipolos por bloque. Esto aproxima el volumen de un
+   imán rectangular sin modelar exactamente sus caras o su material.
+   El ángulo ideal de magnetización es 2*phi, donde phi es la posición
+   azimutal del imán.
+
+d) field() suma la contribución de todos los dipolos en cada punto de la
+   ROI y devuelve Bx, By y Bz en teslas. Para cada elemento de volumen
+   se usa la fórmula del dipolo magnético:
+
+   dB = Br*dV/(4*pi) * [3*(u·r)*r/|r|^5 - u/|r|^3]
+
+   u es la dirección de magnetización; r apunta desde la fuente hasta el
+   punto de evaluación. La permeabilidad mu0 se cancela al expresar el
+   momento magnético mediante Br. Los resultados usan torch.float64.
+
+e) metrics() resume el mapa de campo. mean_bx_t es el promedio de Bx;
+   rms_ppm mide la desviación RMS de Bx dividida por |Bx promedio| y
+   multiplicada por un millón. peak_to_peak_ppm mide el rango máximo a
+   mínimo de Bx con la misma escala. transverse_rms_ppm resume By y Bz.
+   Un RMS en ppm menor indica Bx más uniforme dentro de esta ROI; no
+   describe por sí solo la calidad de una secuencia de MRI.
+
+f) optimize() calcula tres estados: ideal (sin errores), before (con
+   errores angulares aleatorios) y after (tras optimizar). --error-deg
+   representa la desviación estándar de esos errores, no un límite.
+   --seed permite repetir exactamente la misma perturbación simulada.
+
+   PyTorch crea un parámetro por imán. La corrección se calcula con tanh
+   para quedar dentro de +/- --max-correction-deg. El optimizador Adam
+   usa gradientes automáticos durante --steps iteraciones. La función
+   objetivo prioriza el RMS de Bx; también penaliza el campo transversal,
+   una caída del campo medio por debajo del 95 % del caso ideal y
+   correcciones angulares innecesariamente grandes. Los coeficientes de
+   estas penalizaciones son decisiones iniciales, todavía no calibradas
+   con requisitos físicos del proyecto.
+
+g) main() recibe argumentos de línea de comandos, ejecuta optimize(),
+   muestra un resumen y escribe un JSON. --device cuda exige una GPU
+   accesible; --device auto usa CUDA si está disponible o CPU si no.
+
+4. Cómo ejecutarlo e interpretar la salida
+-------------------------------------------
+Desde esta carpeta, con el entorno virtual ya instalado:
+
+  nvidia-smi
+  .venv/bin/python halbach.py --device cuda --steps 250 --output resultado_gpu.json
+
+Para repetir los errores simulados se mantiene el mismo --seed. Para
+comparar otra geometría se cambian --magnets, --ring-radius, --length,
+--radial-width o --tangential-width, manteniendo fija la misma ROI.
+Todas las longitudes de entrada están en metros; Br y B están en teslas.
+
+En la corrida de ejemplo, el RMS de Bx pasó de aproximadamente 56 131 ppm
+antes de corregir a 50 913 ppm después, una reducción aproximada del 9,3 %.
+El campo medio fue cercano a 78-80 mT. Son números de una simulación con
+errores sintéticos y una geometría ilustrativa; no son medidas de hardware
+ni cumplen por sí mismos un objetivo de MRI de ultra bajo campo.
+
+El JSON guarda la geometría, la versión de PyTorch, el dispositivo usado,
+las métricas de los tres estados y corrections_deg, una corrección por imán.
+
+5. Qué NO incluye todavía
+-------------------------
+- Optimización automática del número, tamaño, forma o posición de imanes.
+- Modelo exacto de bloques prismáticos, permeabilidad, desmagnetización,
+  dispersión real de Br, temperatura o piezas ferromagnéticas.
+- Bobinas de RF, gradientes, shim, corriente, potencia o calentamiento.
+- Incertidumbre de fabricación, campo de fuga y validación experimental.
+- Una especificación de B0 y homogeneidad basada en una aplicación concreta.
+
+6. Pasos siguientes recomendados
+--------------------------------
+PASO 1. Definir requisitos medibles.
+Fijar con el equipo de investigación: B0 deseado, radio y longitud útiles
+de la ROI, tolerancia de homogeneidad, espacio para la muestra, imanes
+disponibles, masa/costo máximos y restricciones de seguridad. Sin estos
+valores no se puede afirmar que un diseño es óptimo.
+
+PASO 2. Crear una línea base reproducible.
+Guardar parámetros y mapas B(x,y,z) del diseño ideal y de varios casos
+con errores. Añadir gráficos de cortes transversal y axial, histograma
+de Bx y evolución de la pérdida durante Adam. Comparar siempre sobre la
+misma ROI y con la misma malla.
+
+PASO 3. Revisar la precisión numérica del prototipo.
+Repetir cada caso con quadrature=3, 5 y 7 y con mallas de ROI más finas.
+Comprobar si B medio y RMS convergen. Verificar simetrías del anillo y
+comparar el campo central con una solución de referencia sencilla. Esto
+separa errores de discretización de mejoras reales del optimizador.
+
+PASO 4. Explorar el diseño de los imanes.
+Hacer barridos del número de imanes y de dimensiones comerciales. Para
+variables continuas, estudiar radio, longitud y separaciones con límites
+de colisión, volumen y costo. Comparar también el campo fuera del anillo.
+El número de imanes es discreto y se compara entre configuraciones;
+autograd no lo cambia directamente.
+
+PASO 5. Pasar a un modelo físico más fiel.
+Usar fórmulas de campo para prismas magnetizados o un solver FEM y
+comparar con esta cuadratura de dipolos. Incluir propiedades del material,
+soportes y posibles piezas ferromagnéticas. Optimizar para varios escenarios
+de tolerancia, no solo para una semilla aleatoria favorable.
+
+PASO 6. Medir y validar.
+Construir primero una prueba de concepto pequeña. Medir Bx, By y Bz en
+una malla 3D con un sensor calibrado; comparar mapa medido y simulado,
+registrar incertidumbre y ajustar los parámetros del modelo. Solo después
+decidir si el diseño de imanes alcanza las especificaciones.
+
+PASO 7. Incorporar bobinas.
+Con una geometría de imanes validada, diseñar las bobinas necesarias para
+el sistema MRI: RF y, según el enfoque experimental, gradientes y shim.
+Evaluar homogeneidad de B1, acceso, corriente, calentamiento y acoplamiento
+con el conjunto de imanes. Validar el sistema completo por etapas.
+
+Prioridad inmediata sugerida: completar PASO 1 antes de ampliar el código.
+Luego implementar mapas y pruebas de convergencia de los PASOS 2 y 3.
